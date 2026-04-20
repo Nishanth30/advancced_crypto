@@ -1,32 +1,43 @@
 """
 ================================================================================
-CS6160: Advanced Topics in Cryptology — IIT Hyderabad
-Programming Assignment 1 — Problem 4
+CS6160: Advanced Topics in Cryptology -- IIT Hyderabad
+Programming Assignment 1 -- Problem 4
 
 Zero-Knowledge Proof of Knowledge and Correct Evaluation of a Secret Polynomial
 
 Authors : Divyansh Sevta  (CS25MTECH14018)
           Nishanth D.      (CS25MTECH14020)
 
-Protocol  : Parallel per-coefficient Sigma protocol + scalar evaluation check
-Hash      : SHA-256 (Fiat-Shamir non-interactive version)
-Libraries : NONE — only built-in Python (hashlib, json, secrets, sys)
+Protocol : Parallel per-coefficient Sigma protocol with shared challenge
+           + scalar evaluation-consistency check.
+Hash     : SHA-256  (Fiat-Shamir non-interactive; also used in hash-derived
+           interactive variant).
+Libs     : NONE -- only Python built-ins (hashlib, json, secrets, sys, os).
 
 --------------------------------------------------------------------------------
+MODES
+    noninteractive
+        Single-shot Fiat-Shamir NIZK.  Challenge c = H(all public + T_i + E).
+
+    interactive-hash
+        k-round interactive protocol.  In each round j the per-round challenge
+        c_j = H("ZKP-POLY-INT-v1" || j || public || T_list_j || E_j)  mod q.
+        Verifier independently recomputes c_j -- no trust in prover's draw.
+        This is the single-program "simulated interactive" variant.
+
+    (For the live two-program interactive variant see
+     prover_interactive.py / verifier_interactive.py.)
+
 USAGE
-    Prover   (interactive)     : python zkp_polynomial.py prover    --mode interactive
-    Prover   (non-interactive) : python zkp_polynomial.py prover    --mode noninteractive
-    Verifier                   : python zkp_polynomial.py verifier
+    python Problem4.py prover   --mode noninteractive
+    python Problem4.py prover   --mode interactive-hash
+    python Problem4.py prover   --mode noninteractive --tamper
+    python Problem4.py verifier
 
-INPUT FILES
-    prover_input.json   — all prover private + public inputs
-    proof.json          — written by prover; read by verifier
-
-OUTPUT
-    proof.json          — written by prover  (commitments, y, transcript)
-    stdout              — verifier prints ACCEPT or REJECT
-
-See README at the bottom of this file for full JSON schemas.
+INPUT / OUTPUT FILES
+    public.json      public parameters + commitments + (z, y)   (read)
+    private.json     prover's witness  (coeffs, randomness)     (read by prover)
+    proof.json       proof transcript                           (written/read)
 ================================================================================
 """
 
@@ -36,593 +47,381 @@ import secrets
 import sys
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # 1. GROUP ARITHMETIC
-#    All group operations live in the cyclic subgroup G_q of Z*_p
-#    where p is a safe prime (p = 2q+1) and q is the prime group order.
-#    Exponent arithmetic is always mod q.
-#    Group element arithmetic is always mod p.
-# ═══════════════════════════════════════════════════════════════════════════════
+#    All exponents are reduced mod q (order of G_q).
+#    All group elements live in Z_p^* with p = 2q + 1 (safe prime).
+# ============================================================================
 
-def group_exp(base: int, exp: int, p: int, q: int) -> int:
-    """base^exp mod p  (exponent reduced mod q first)."""
+def g_exp(base: int, exp: int, p: int, q: int) -> int:
     return pow(base, exp % q, p)
 
 
-def group_mul(a: int, b: int, p: int) -> int:
-    """a * b mod p."""
-    return (a * b) % p
-
-
-def group_inv(a: int, p: int) -> int:
-    """Modular inverse of a in Z*_p via Fermat's little theorem (p prime)."""
-    return pow(a, p - 2, p)
-
-
-def scalar_inv(a: int, q: int) -> int:
-    """Modular inverse of a in Z_q (q prime)."""
-    return pow(a, q - 2, q)
-
-
 def rand_scalar(q: int) -> int:
-    """
-    Sample a uniformly random scalar from Z_q.
-    Uses secrets.randbelow — a CSPRNG backed by OS entropy.
-    Never use random.randint for cryptographic nonces.
-    """
     return secrets.randbelow(q)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. PEDERSEN COMMITMENT SCHEME
-#    Com(v ; r) = g^v * h^r  mod p
-#    Perfectly hiding (statistical), computationally binding under DL.
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 2. PEDERSEN COMMITMENT   C = g^v * h^r  mod p
+# ============================================================================
 
-def pedersen_commit(v: int, r: int, g: int, h: int, p: int, q: int) -> int:
-    """
-    Compute Pedersen commitment C = g^v * h^r mod p.
-
-    Args:
-        v : secret value (polynomial coefficient a_i)
-        r : blinding randomness r_i
-        g : generator 1 (public)
-        h : generator 2 (public, log_g(h) unknown — trapdoor)
-        p : group modulus
-        q : group order
-
-    Returns:
-        C = g^v * h^r mod p
-    """
-    gv = group_exp(g, v, p, q)
-    hr = group_exp(h, r, p, q)
-    return group_mul(gv, hr, p)
+def pedersen(v: int, r: int, g: int, h: int, p: int, q: int) -> int:
+    return (g_exp(g, v, p, q) * g_exp(h, r, p, q)) % p
 
 
-def compute_commitments(coeffs: list, randomness: list,
-                        g: int, h: int, p: int, q: int) -> list:
-    """
-    Generate Pedersen commitments for all polynomial coefficients.
-
-    Args:
-        coeffs     : [a_0, a_1, ..., a_d]
-        randomness : [r_0, r_1, ..., r_d]
-
-    Returns:
-        [C_0, C_1, ..., C_d]  where C_i = g^{a_i} * h^{r_i} mod p
-    """
-    assert len(coeffs) == len(randomness), \
-        "coeffs and randomness must have the same length."
-    return [
-        pedersen_commit(a, r, g, h, p, q)
-        for a, r in zip(coeffs, randomness)
-    ]
+def compute_commitments(coeffs, randomness, g, h, p, q):
+    assert len(coeffs) == len(randomness)
+    return [pedersen(a, r, g, h, p, q) for a, r in zip(coeffs, randomness)]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. POLYNOMIAL EVALUATION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 3. POLYNOMIAL EVALUATION   y = sum_i a_i * z^i  mod q
+# ============================================================================
 
-def poly_eval(coeffs: list, z: int, q: int) -> int:
-    """
-    Evaluate P(z) = sum_{i=0}^{d} a_i * z^i  mod q.
-
-    Uses Horner's method:  P(z) = a_0 + z*(a_1 + z*(a_2 + ... ))
-    but written in the forward direction for clarity.
-
-    Args:
-        coeffs : [a_0, a_1, ..., a_d]  (index matches degree)
-        z      : evaluation point in Z_q
-        q      : field modulus
-
-    Returns:
-        y = P(z) mod q
-    """
-    result = 0
-    z_pow = 1
+def poly_eval(coeffs, z, q):
+    y = 0
+    zp = 1
     for a in coeffs:
-        result = (result + a * z_pow) % q
-        z_pow = (z_pow * z) % q
-    return result
+        y = (y + a * zp) % q
+        zp = (zp * z) % q
+    return y
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. FIAT-SHAMIR CHALLENGE  (non-interactive version only)
-#    c = H( g || h || p || q || C_0 || ... || C_d || z || y
-#                             || T_0 || ... || T_d || E ) mod q
-#
-#    H is SHA-256; output is reduced mod q.
-#    All integers use canonical big-endian, length-prefixed encoding.
-#    Domain separator prevents cross-protocol attacks.
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 4. CANONICAL ENCODING + HASH CHALLENGES
+#    Encoding: 4-byte big-endian length || big-endian bytes.
+#    Domain-separated SHA-256 for each use-site.
+# ============================================================================
 
-def _encode_int(n: int) -> bytes:
-    """
-    Canonical encoding: big-endian bytes of n, preceded by a 4-byte
-    length field.  Ensures unambiguous parsing even for variable-length ints.
-    """
-    raw = n.to_bytes((n.bit_length() + 7) // 8 or 1, 'big')
-    return len(raw).to_bytes(4, 'big') + raw
+def _enc_int(n: int) -> bytes:
+    if n < 0:
+        raise ValueError("negative int not allowed in transcript")
+    raw = n.to_bytes((n.bit_length() + 7) // 8 or 1, "big")
+    return len(raw).to_bytes(4, "big") + raw
 
 
-def fiat_shamir_challenge(g: int, h: int, p: int, q: int,
-                          commitments: list,
-                          z: int, y: int,
-                          T_list: list, E: int) -> int:
-    """
-    Derive the non-interactive Fiat-Shamir challenge via SHA-256.
-
-    Returns c in Z_q.
-    """
-    h_obj = hashlib.sha256()
-    h_obj.update(b"ZKP-POLY-FS-v1:")          # domain separator
-    for val in [g, h, p, q]:
-        h_obj.update(_encode_int(val))
+def _hash_public_prefix(g, h, p, q, commitments, z, y) -> bytes:
+    """Common prefix used by both NI and interactive-hash challenge hashes."""
+    buf = b""
+    for v in (g, h, p, q):
+        buf += _enc_int(v)
+    buf += _enc_int(len(commitments))
     for C in commitments:
-        h_obj.update(_encode_int(C))
-    h_obj.update(_encode_int(z))
-    h_obj.update(_encode_int(y))
+        buf += _enc_int(C)
+    buf += _enc_int(z)
+    buf += _enc_int(y)
+    return buf
+
+
+def fs_challenge_ni(g, h, p, q, commitments, z, y, T_list, E) -> int:
+    """Non-interactive (Fiat-Shamir) challenge."""
+    H = hashlib.sha256()
+    H.update(b"ZKP-POLY-FS-v1:")
+    H.update(_hash_public_prefix(g, h, p, q, commitments, z, y))
     for T in T_list:
-        h_obj.update(_encode_int(T))
-    h_obj.update(_encode_int(E))
-    return int.from_bytes(h_obj.digest(), 'big') % q
+        H.update(_enc_int(T))
+    H.update(_enc_int(E))
+    return int.from_bytes(H.digest(), "big") % q
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. SIGMA PROTOCOL — CORE STEPS  (shared by interactive and non-interactive)
-# ═══════════════════════════════════════════════════════════════════════════════
+def fs_challenge_round(g, h, p, q, commitments, z, y,
+                       round_index: int, T_list, E) -> int:
+    """Hash-derived challenge for the j-th interactive round."""
+    H = hashlib.sha256()
+    H.update(b"ZKP-POLY-INT-v1:")
+    H.update(_enc_int(round_index))
+    H.update(_hash_public_prefix(g, h, p, q, commitments, z, y))
+    for T in T_list:
+        H.update(_enc_int(T))
+    H.update(_enc_int(E))
+    return int.from_bytes(H.digest(), "big") % q
 
-def _commit_phase(coeffs: list, randomness: list,
-                  z: int, g: int, h: int, p: int, q: int) -> dict:
+
+# ============================================================================
+# 5. SIGMA PROTOCOL CORE
+# ============================================================================
+
+def commit_phase(d, z, g, h, p, q):
     """
-    PROVER — Commit phase (Move 1 of Sigma protocol).
-
-    For each i in {0,...,d}:
-        sample k_{i,a}, k_{i,r} <-$ Z_q
-        compute T_i = g^{k_{i,a}} * h^{k_{i,r}}  mod p
-
-    Compute scalar evaluation nonce:
-        E = sum_{i=0}^{d} k_{i,a} * z^i  mod q
-
-    Returns:
-        T_list    : [T_0, ..., T_d]  — sent to verifier
-        E         : int              — sent to verifier
-        k_a_list  : secret nonces   — kept by prover, NOT sent
-        k_r_list  : secret nonces   — kept by prover, NOT sent
+    Sample k_{i,a}, k_{i,r} fresh; compute T_i = g^{k_{i,a}} h^{k_{i,r}}
+    and scalar E = sum_i k_{i,a} z^i  mod q.
+    Returns (T_list, E, k_a, k_r).
     """
-    d = len(coeffs) - 1
-    k_a_list = [rand_scalar(q) for _ in range(d + 1)]
-    k_r_list = [rand_scalar(q) for _ in range(d + 1)]
-
-    T_list = [
-        group_mul(group_exp(g, ka, p, q), group_exp(h, kr, p, q), p)
-        for ka, kr in zip(k_a_list, k_r_list)
-    ]
-
+    k_a = [rand_scalar(q) for _ in range(d + 1)]
+    k_r = [rand_scalar(q) for _ in range(d + 1)]
+    T_list = [(g_exp(g, ka, p, q) * g_exp(h, kr, p, q)) % p
+              for ka, kr in zip(k_a, k_r)]
     E = 0
-    z_pow = 1
-    for ka in k_a_list:
-        E = (E + ka * z_pow) % q
-        z_pow = (z_pow * z) % q
-
-    return {
-        "T_list":  T_list,
-        "E":       E,
-        "k_a_list": k_a_list,
-        "k_r_list": k_r_list,
-    }
+    zp = 1
+    for ka in k_a:
+        E = (E + ka * zp) % q
+        zp = (zp * z) % q
+    return T_list, E, k_a, k_r
 
 
-def _response_phase(c: int,
-                    coeffs: list, randomness: list,
-                    k_a_list: list, k_r_list: list,
-                    q: int) -> dict:
-    """
-    PROVER — Response phase (Move 3 of Sigma protocol).
-
-    For each i:
-        u_{i,a} = k_{i,a} + c * a_i  mod q
-        u_{i,r} = k_{i,r} + c * r_i  mod q
-
-    Returns:
-        u_a_list : [u_{0,a}, ..., u_{d,a}]
-        u_r_list : [u_{0,r}, ..., u_{d,r}]
-    """
-    u_a_list = [(ka + c * a) % q for ka, a in zip(k_a_list, coeffs)]
-    u_r_list = [(kr + c * r) % q for kr, r in zip(k_r_list, randomness)]
-    return {"u_a_list": u_a_list, "u_r_list": u_r_list}
+def response_phase(c, coeffs, randomness, k_a, k_r, q):
+    u_a = [(ka + c * a) % q for ka, a in zip(k_a, coeffs)]
+    u_r = [(kr + c * r) % q for kr, r in zip(k_r, randomness)]
+    return u_a, u_r
 
 
-def _verify_checks(commitments: list, z: int, y: int,
-                   T_list: list, E: int, c: int,
-                   u_a_list: list, u_r_list: list,
-                   g: int, h: int, p: int, q: int) -> bool:
-    """
-    VERIFIER — Two algebraic checks.
-
-    Check (V1) for all i:
-        g^{u_{i,a}} * h^{u_{i,r}}  ==  T_i * C_i^c   mod p
-
-    Check (V_eval):
-        sum_{i=0}^{d} u_{i,a} * z^i  ==  E + c * y   mod q
-
-    Returns True iff both checks pass for all i.
-    """
-    # V1 — per-coefficient commitment opening check
-    for i, (C, T, ua, ur) in enumerate(
-            zip(commitments, T_list, u_a_list, u_r_list)):
-        lhs = group_mul(group_exp(g, ua, p, q),
-                        group_exp(h, ur, p, q), p)
-        rhs = group_mul(T, group_exp(C, c, p, q), p)
+def verify_checks(commitments, z, y, T_list, E, c, u_a, u_r, g, h, p, q) -> bool:
+    # (V1)  g^{u_a} h^{u_r} == T_i * C_i^c   for every i
+    for C, T, ua, ur in zip(commitments, T_list, u_a, u_r):
+        lhs = (g_exp(g, ua, p, q) * g_exp(h, ur, p, q)) % p
+        rhs = (T * g_exp(C, c, p, q)) % p
         if lhs != rhs:
             return False
-
-    # V_eval — scalar evaluation consistency check
+    # (V_eval)  sum u_a z^i == E + c*y   mod q
     lhs_eval = 0
-    z_pow = 1
-    for ua in u_a_list:
-        lhs_eval = (lhs_eval + ua * z_pow) % q
-        z_pow = (z_pow * z) % q
-
+    zp = 1
+    for ua in u_a:
+        lhs_eval = (lhs_eval + ua * zp) % q
+        zp = (zp * z) % q
     rhs_eval = (E + c * y) % q
     return lhs_eval == rhs_eval
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. INTERACTIVE PROTOCOL  (k rounds)
-#    In a real deployment the verifier sends a fresh random c each round.
-#    Here the verifier challenge is simulated by the prover using the CSPRNG
-#    (rand_scalar) so the full transcript can be generated in one program and
-#    verified in another via proof.json.
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 6. SUBGROUP + RANGE VALIDATION  (verifier-side sanity checks)
+# ============================================================================
 
-def interactive_prover(coeffs: list, randomness: list,
-                       commitments: list,
-                       y: int, z: int, k: int,
-                       g: int, h: int, p: int, q: int) -> list:
-    """
-    PROVER — Generate k-round interactive proof transcript.
+def validate_public(pub: dict) -> None:
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    # We require the order-q subgroup to exist inside Z_p^*, i.e. q | (p-1).
+    # For the 'small'/'full' generators we produce p = 2q+1 (safe prime);
+    # for 'toy' (PDF: p=607, q=101) we have p = 6q+1.  Either is fine.
+    if p < 5 or q < 3 or (p - 1) % q != 0:
+        raise ValueError("invalid (p, q): require q | (p-1)")
+    if not (1 < g < p) or pow(g, q, p) != 1:
+        raise ValueError("g is not an order-q element")
+    if not (1 < h < p) or pow(h, q, p) != 1:
+        raise ValueError("h is not an order-q element")
+    if g == h:
+        raise ValueError("g == h (degenerate)")
+    for C in pub["commitments"]:
+        if not (0 < C < p) or pow(C, q, p) != 1:
+            raise ValueError(f"commitment {C} not in order-q subgroup")
+    if not (0 <= pub["z"] < q):
+        raise ValueError("z out of range")
+    if not (0 <= pub["y"] < q):
+        raise ValueError("y out of range")
 
-    Each round is independent with fresh nonces.
-    The verifier challenge c is sampled fresh each round.
 
-    Returns:
-        List of k dicts, each with keys: T_list, E, c, u_a_list, u_r_list
-    """
+# ============================================================================
+# 7. PROTOCOL WRAPPERS
+# ============================================================================
+
+def ni_prover(pub, coeffs, randomness):
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    d = pub["d"]
+    z, y = pub["z"], pub["y"]
+    C = pub["commitments"]
+
+    T_list, E, k_a, k_r = commit_phase(d, z, g, h, p, q)
+    c = fs_challenge_ni(g, h, p, q, C, z, y, T_list, E)
+    u_a, u_r = response_phase(c, coeffs, randomness, k_a, k_r, q)
+    return {"T_list": T_list, "E": E, "c": c, "u_a": u_a, "u_r": u_r}
+
+
+def ni_verifier(pub, proof) -> bool:
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    z, y = pub["z"], pub["y"]
+    C = pub["commitments"]
+
+    c_expected = fs_challenge_ni(g, h, p, q, C, z, y, proof["T_list"], proof["E"])
+    if c_expected != proof["c"]:
+        return False
+    return verify_checks(
+        C, z, y,
+        proof["T_list"], proof["E"], proof["c"],
+        proof["u_a"], proof["u_r"],
+        g, h, p, q,
+    )
+
+
+def inthash_prover(pub, coeffs, randomness, k_rounds: int):
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    d = pub["d"]
+    z, y = pub["z"], pub["y"]
+    C = pub["commitments"]
+
     rounds = []
-    for _ in range(k):
-        commit_data = _commit_phase(coeffs, randomness, z, g, h, p, q)
-        c = rand_scalar(q)                    # verifier challenge
-        resp = _response_phase(
-            c, coeffs, randomness,
-            commit_data["k_a_list"], commit_data["k_r_list"], q
-        )
-        rounds.append({
-            "T_list":   commit_data["T_list"],
-            "E":        commit_data["E"],
-            "c":        c,
-            "u_a_list": resp["u_a_list"],
-            "u_r_list": resp["u_r_list"],
-        })
+    for j in range(k_rounds):
+        T_list, E, k_a, k_r = commit_phase(d, z, g, h, p, q)
+        c = fs_challenge_round(g, h, p, q, C, z, y, j, T_list, E)
+        u_a, u_r = response_phase(c, coeffs, randomness, k_a, k_r, q)
+        rounds.append({"T_list": T_list, "E": E, "c": c,
+                       "u_a": u_a, "u_r": u_r})
     return rounds
 
 
-def interactive_verifier(commitments: list, z: int, y: int,
-                         rounds: list,
-                         g: int, h: int, p: int, q: int) -> str:
-    """
-    VERIFIER — Verify all k rounds of an interactive transcript.
+def inthash_verifier(pub, rounds) -> bool:
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    z, y = pub["z"], pub["y"]
+    C = pub["commitments"]
 
-    Returns "ACCEPT" only if every round passes; "REJECT" otherwise.
-    """
-    for rnd in rounds:
-        if not _verify_checks(
-            commitments, z, y,
-            rnd["T_list"], rnd["E"], rnd["c"],
-            rnd["u_a_list"], rnd["u_r_list"],
-            g, h, p, q
-        ):
-            return "REJECT"
-    return "ACCEPT"
+    for j, rnd in enumerate(rounds):
+        c_expected = fs_challenge_round(g, h, p, q, C, z, y, j,
+                                        rnd["T_list"], rnd["E"])
+        if c_expected != rnd["c"]:
+            return False
+        if not verify_checks(C, z, y, rnd["T_list"], rnd["E"], rnd["c"],
+                             rnd["u_a"], rnd["u_r"], g, h, p, q):
+            return False
+    return True
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 7. NON-INTERACTIVE PROTOCOL  (Fiat-Shamir transform, k=1)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 8. TAMPERING  (for REJECT demo)
+# ============================================================================
 
-def noninteractive_prover(coeffs: list, randomness: list,
-                          commitments: list,
-                          y: int, z: int,
-                          g: int, h: int, p: int, q: int) -> dict:
-    """
-    PROVER — Generate a non-interactive proof via the Fiat-Shamir transform.
-
-    Steps:
-        1. Sample fresh nonces; compute first message (T_list, E)
-        2. Derive challenge: c = H(g, h, p, q, C_i, z, y, T_i, E) mod q
-        3. Compute responses (u_a_list, u_r_list)
-
-    Returns proof pi = { T_list, E, c, u_a_list, u_r_list }
-    """
-    commit_data = _commit_phase(coeffs, randomness, z, g, h, p, q)
-
-    c = fiat_shamir_challenge(
-        g, h, p, q, commitments, z, y,
-        commit_data["T_list"], commit_data["E"]
-    )
-
-    resp = _response_phase(
-        c, coeffs, randomness,
-        commit_data["k_a_list"], commit_data["k_r_list"], q
-    )
-
-    return {
-        "T_list":   commit_data["T_list"],
-        "E":        commit_data["E"],
-        "c":        c,
-        "u_a_list": resp["u_a_list"],
-        "u_r_list": resp["u_r_list"],
-    }
+def tamper_proof(proof_obj, mode: str, q: int):
+    """Flip the first response scalar by +1 mod q. Breaks V1 and V_eval."""
+    def flip(resp):
+        resp["u_a"][0] = (resp["u_a"][0] + 1) % q
+    if mode == "noninteractive":
+        flip(proof_obj["transcript"])
+    else:
+        flip(proof_obj["transcript"][0])
+    proof_obj["tampered"] = True
 
 
-def noninteractive_verifier(commitments: list, z: int, y: int,
-                             proof: dict,
-                             g: int, h: int, p: int, q: int) -> str:
-    """
-    VERIFIER — Verify a non-interactive proof.
+# ============================================================================
+# 9. PROVER / VERIFIER MAIN PROGRAMS
+# ============================================================================
 
-    Steps:
-        1. Recompute c = H(...) and assert it matches proof["c"]
-        2. Run standard V1 and V_eval checks
+def _load(path):
+    with open(path) as f:
+        return json.load(f)
 
-    Returns "ACCEPT" or "REJECT".
-    """
-    expected_c = fiat_shamir_challenge(
-        g, h, p, q, commitments, z, y,
-        proof["T_list"], proof["E"]
-    )
-    if expected_c != proof["c"]:
+
+def _dump(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
+
+def run_prover(args):
+    pub     = _load(args["public"])
+    priv    = _load(args["private"])
+    mode    = args["mode"]
+    tamper  = args["tamper"]
+
+    p, q, g, h = pub["p"], pub["q"], pub["g"], pub["h"]
+    d, k       = pub["d"], pub.get("k", 1)
+    coeffs     = priv["coeffs"]
+    randomness = priv["randomness"]
+
+    validate_public(pub)
+    assert len(coeffs) == d + 1 == len(randomness)
+    assert all(0 <= a < q for a in coeffs),     "coeff out of [0, q)"
+    assert all(0 <= r < q for r in randomness), "randomness out of [0, q)"
+    recomputed = compute_commitments(coeffs, randomness, g, h, p, q)
+    assert recomputed == pub["commitments"], \
+        "private witness does not open public commitments"
+    assert poly_eval(coeffs, pub["z"], q) == pub["y"], \
+        "P(z) != y -- prover cannot prove a false statement"
+
+    if mode == "noninteractive":
+        transcript = ni_prover(pub, coeffs, randomness)
+    elif mode == "interactive-hash":
+        transcript = inthash_prover(pub, coeffs, randomness, k)
+    else:
+        raise SystemExit(f"Unknown --mode '{mode}'")
+
+    proof = {"mode": mode,
+             "k": k if mode == "interactive-hash" else 1,
+             "transcript": transcript,
+             "tampered": False}
+
+    if tamper:
+        tamper_proof(proof, mode, q)
+
+    _dump(args["proof"], proof)
+
+    print(f"[PROVER] mode       = {mode}")
+    print(f"[PROVER] tampered   = {proof['tampered']}")
+    if mode == "interactive-hash":
+        print(f"[PROVER] rounds     = {k}")
+    print(f"[PROVER] wrote {args['proof']}")
+
+
+def run_verifier(args):
+    pub   = _load(args["public"])
+    proof = _load(args["proof"])
+
+    validate_public(pub)
+
+    mode = proof["mode"]
+    if mode == "noninteractive":
+        ok = ni_verifier(pub, proof["transcript"])
+    elif mode == "interactive-hash":
+        ok = inthash_verifier(pub, proof["transcript"])
+    else:
+        print("REJECT")
+        print(f"[VERIFIER] unknown proof mode '{mode}'")
         return "REJECT"
 
-    ok = _verify_checks(
-        commitments, z, y,
-        proof["T_list"], proof["E"], proof["c"],
-        proof["u_a_list"], proof["u_r_list"],
-        g, h, p, q
-    )
-    return "ACCEPT" if ok else "REJECT"
+    verdict = "ACCEPT" if ok else "REJECT"
+    print(verdict)
+    print(f"[VERIFIER] mode     = {mode}")
+    print(f"[VERIFIER] tampered-flag-in-proof = {proof.get('tampered', False)}")
+    return verdict
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 8. PROVER MAIN PROGRAM
-#    Input  : prover_input.json
-#    Output : proof.json
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# 10. CLI
+# ============================================================================
 
-def run_prover(input_path: str = "prover_input.json",
-               output_path: str = "proof.json",
-               mode: str = "noninteractive"):
-    """
-    Prover entry point.
-
-    Reads prover_input.json, generates proof, writes proof.json.
-    """
-    with open(input_path, "r") as f:
-        inp = json.load(f)
-
-    p          = inp["p"]
-    q          = inp["q"]
-    g          = inp["g"]
-    h          = inp["h"]
-    d          = inp["d"]
-    coeffs     = inp["coeffs"]
-    randomness = inp["randomness"]
-    z          = inp["z"]
-    k          = inp.get("k", 1)
-
-    assert len(coeffs) == d + 1,          "Need exactly d+1 coefficients."
-    assert len(randomness) == d + 1,      "Need exactly d+1 randomness values."
-    assert len(coeffs) == len(randomness)
-
-    # Step 1 — Commitments
-    commitments = compute_commitments(coeffs, randomness, g, h, p, q)
-
-    # Step 2 — Claimed evaluation value
-    y = poly_eval(coeffs, z, q)
-
-    # Step 3 — Proof
-    if mode == "interactive":
-        transcript = interactive_prover(
-            coeffs, randomness, commitments, y, z, k, g, h, p, q
-        )
-    else:
-        transcript = noninteractive_prover(
-            coeffs, randomness, commitments, y, z, g, h, p, q
-        )
-
-    # Step 4 — Write output
-    output = {
-        "mode":        mode,
-        "p":           p,
-        "q":           q,
-        "g":           g,
-        "h":           h,
-        "commitments": commitments,
-        "y":           y,
-        "z":           z,
-        "transcript":  transcript,
+def _parse(argv):
+    a = {
+        "mode":    "noninteractive",
+        "public":  "public.json",
+        "private": "private.json",
+        "proof":   "proof.json",
+        "tamper":  False,
     }
-
-    with open(output_path, "w") as f:
-        json.dump(output, f, indent=2)
-
-    print(f"[PROVER] Commitments : {commitments}")
-    print(f"[PROVER] y = P({z})  : {y}")
-    print(f"[PROVER] Mode        : {mode}")
-    print(f"[PROVER] Proof written to '{output_path}'")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 9. VERIFIER MAIN PROGRAM
-#    Input  : proof.json  (written by prover)
-#    Output : ACCEPT or REJECT  (stdout)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def run_verifier(input_path: str = "proof.json"):
-    """
-    Verifier entry point.
-
-    Reads proof.json, verifies, prints ACCEPT or REJECT.
-    """
-    with open(input_path, "r") as f:
-        inp = json.load(f)
-
-    mode        = inp["mode"]
-    p           = inp["p"]
-    q           = inp["q"]
-    g           = inp["g"]
-    h           = inp["h"]
-    commitments = inp["commitments"]
-    y           = inp["y"]
-    z           = inp["z"]
-    transcript  = inp["transcript"]
-
-    if mode == "interactive":
-        result = interactive_verifier(commitments, z, y, transcript, g, h, p, q)
-    else:
-        result = noninteractive_verifier(commitments, z, y, transcript, g, h, p, q)
-
-    print(result)
-    return result
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 10. COMMAND-LINE INTERFACE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _parse_args(argv):
-    args = {"mode": "noninteractive", "input": None, "output": "proof.json"}
     i = 0
     while i < len(argv):
-        if argv[i] == "--mode" and i + 1 < len(argv):
-            args["mode"] = argv[i + 1]; i += 2
-        elif argv[i] == "--input" and i + 1 < len(argv):
-            args["input"] = argv[i + 1]; i += 2
-        elif argv[i] == "--output" and i + 1 < len(argv):
-            args["output"] = argv[i + 1]; i += 2
+        t = argv[i]
+        if t == "--mode" and i + 1 < len(argv):
+            a["mode"] = argv[i + 1]; i += 2
+        elif t == "--public" and i + 1 < len(argv):
+            a["public"] = argv[i + 1]; i += 2
+        elif t == "--private" and i + 1 < len(argv):
+            a["private"] = argv[i + 1]; i += 2
+        elif t == "--proof" and i + 1 < len(argv):
+            a["proof"] = argv[i + 1]; i += 2
+        elif t == "--tamper":
+            a["tamper"] = True; i += 1
         else:
             i += 1
-    return args
+    return a
 
 
-def _print_usage():
-    print("""
+_USAGE = """
 USAGE
-    python zkp_polynomial.py prover   [--mode interactive|noninteractive]
-                                      [--input  prover_input.json]
-                                      [--output proof.json]
+    python Problem4.py prover   [--mode noninteractive|interactive-hash]
+                                [--public public.json]
+                                [--private private.json]
+                                [--proof proof.json]
+                                [--tamper]
 
-    python zkp_polynomial.py verifier [--input proof.json]
-
-DEFAULTS
-    --mode   noninteractive
-    --input  prover_input.json   (for prover)
-             proof.json          (for verifier)
-    --output proof.json
-""")
-
+    python Problem4.py verifier [--public public.json]
+                                [--proof proof.json]
+"""
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        _print_usage()
-        sys.exit(0)
+        print(_USAGE); sys.exit(0)
 
     role = sys.argv[1].lower()
-    args = _parse_args(sys.argv[2:])
+    args = _parse(sys.argv[2:])
 
     if role == "prover":
-        run_prover(
-            input_path  = args["input"] or "prover_input.json",
-            output_path = args["output"],
-            mode        = args["mode"]
-        )
-
+        run_prover(args)
     elif role == "verifier":
-        run_verifier(input_path = args["input"] or "proof.json")
-
+        res = run_verifier(args)
+        sys.exit(0 if res == "ACCEPT" else 1)
     else:
-        print(f"[ERROR] Unknown role '{role}'. Expected: prover | verifier")
-        _print_usage()
-        sys.exit(1)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# README — INPUT / OUTPUT SCHEMAS
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# ── prover_input.json ──────────────────────────────────────────────────────────
-# {
-#   "p"          : <int>         safe prime  (group modulus, p = 2q+1)
-#   "q"          : <int>         prime order of G_q
-#   "g"          : <int>         generator g of G_q  (1 < g < p, order q)
-#   "h"          : <int>         generator h of G_q  (1 < h < p, log_g(h) unknown)
-#   "d"          : <int>         polynomial degree
-#   "coeffs"     : [a0,...,ad]   polynomial coefficients  (length = d+1)
-#   "randomness" : [r0,...,rd]   Pedersen blinding values (length = d+1)
-#   "z"          : <int>         evaluation point in Z_q
-#   "k"          : <int>         number of rounds (interactive mode only; ignored for NI)
-# }
-#
-# ── proof.json  (prover output / verifier input) ───────────────────────────────
-# {
-#   "mode"        : "interactive" | "noninteractive"
-#   "p"           : <int>
-#   "q"           : <int>
-#   "g"           : <int>
-#   "h"           : <int>
-#   "commitments" : [C0, C1, ..., Cd]
-#   "y"           : <int>          claimed evaluation P(z) mod q
-#   "z"           : <int>          evaluation point
-#
-#   — noninteractive —
-#   "transcript"  : {
-#       "T_list"   : [T0, ..., Td],
-#       "E"        : <int>,
-#       "c"        : <int>,
-#       "u_a_list" : [u0a, ..., uda],
-#       "u_r_list" : [u0r, ..., udr]
-#   }
-#
-#   — interactive —
-#   "transcript"  : [          <- list of k round objects
-#       {
-#           "T_list"   : [T0, ..., Td],
-#           "E"        : <int>,
-#           "c"        : <int>,
-#           "u_a_list" : [u0a, ..., uda],
-#           "u_r_list" : [u0r, ..., udr]
-#       },
-#       ...
-#   ]
-# }
-# ═══════════════════════════════════════════════════════════════════════════════
+        print(f"[ERROR] Unknown role '{role}'"); print(_USAGE); sys.exit(1)
