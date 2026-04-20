@@ -1,139 +1,63 @@
-Problem 4: Zero-Knowledge Proof of Knowledge and Correct Evaluation of
+# Problem 4: Zero-Knowledge Proof of Knowledge and Correct Evaluation of a Secret Polynomial
 
-a Secret Polynomial
-4.1 Problem Description
-Polynomials play a central role in modern cryptography and form the foundation of many
+## 4.1 Problem Description
+Polynomials play a central role in modern cryptography and form the foundation of many advanced zero-knowledge proof systems. In this assignment, the prover possesses a secret polynomial and must convince the verifier that they know this polynomial and that it evaluates correctly at a given point, without revealing the polynomial itself.
 
-advanced zero-knowledge proof systems. In this assignment, the prover possesses a secret poly-
-nomial and must convince the verifier that they know this polynomial and that it evaluates
+Let $G_q$ be a cyclic group of prime order $q$ with public generators $g$ and $h$, where the discrete logarithm relation between $g$ and $h$ is unknown. All arithmetic operations are performed modulo $q$.
 
-correctly at a given point, without revealing the polynomial itself.
-Let Gq be a cyclic group of prime order q with public generators g and h, where the discrete
-logarithm relation between g and h is unknown. All arithmetic operations are performed modulo
-q.
-The prover possesses a secret polynomial of degree d defined as:
+The prover possesses a secret polynomial of degree $d$ defined as:
+$$P(x) = a_0 + a_1x + a_2x^2 + \dots + a_dx^d$$
+where the coefficients $a_0, a_1, \dots, a_d \in \mathbb{Z}_q$ are known only to the prover.
 
-P(x) = a0 + a1x + a2x
+To commit to the polynomial, the prover generates **Pedersen commitments** to each coefficient:
+$$C_i = g^{a_i} h^{r_i}, \text{ for } i = 0, 1, \dots, d$$
+where each $r_i \in \mathbb{Z}_q$ is randomly chosen and kept secret.
 
-2 + · · · + adx
-d
+The prover must convince the verifier that the committed polynomial evaluates to a claimed value at a given public point, without revealing the polynomial coefficients.
 
-where the coefficients:
-
-a0, a1, . . . , ad ∈ Zq
-
-are known only to the prover.
-
-To commit to the polynomial, the prover generates Pedersen commitments to each coeffi-
-cient:
-
-Ci = g
-aih
-ri
-, for i = 0, 1, . . . , d
-where each ri ∈ Zq is randomly chosen and kept secret.
-The prover must convince the verifier that the committed polynomial evaluates to a claimed
-value at a given public point, without revealing the polynomial coefficients.
-4.2 Public Inputs
+## 4.2 Public Inputs
 The following information is publicly known to both the prover and the verifier:
-• Group parameters (Gq, q, g, h)
-• Polynomial degree d
-• Polynomial coefficient commitments:
+- **Group parameters:** $(G_q, q, g, h)$
+- **Polynomial degree:** $d$
+- **Polynomial coefficient commitments:** $C_0, C_1, \dots, C_d$
+- **Evaluation point:** $z \in \mathbb{Z}_q$
+- **Claimed evaluation value:** $y = P(z) \in \mathbb{Z}_q$
+- **Number of protocol rounds:** $k$
 
-C0, C1, . . . , Cd
+These values are provided as part of the assignment input files (`public.json`).
 
-• Evaluation point:
-
-z ∈ Zq
-• Claimed evaluation value, that is, P(z):
-y ∈ Zq
-
-• Number of protocol rounds k
-These values will be provided to students as part of the assignment input files.
-4.3 Private Inputs
+## 4.3 Private Inputs
 The prover possesses the following secret information:
-• Polynomial coefficients:
+- **Polynomial coefficients:** $a_0, a_1, \dots, a_d$
+- **Commitment randomness:** $r_0, r_1, \dots, r_d$
 
-a0, a1, . . . , ad
+Such that:
+- $C_i = g^{a_i} h^{r_i}, \forall i$
+- $y = \sum_{i=0}^{d} a_i z^i \pmod q$
 
-• Commitment randomness:
-
-r0, r1, . . . , rd
-
-such that:
-
-Ci = g
-aih
-ri
-, ∀i
-
-and
-
-y =
-X
-d
-i=0
-aiz
-i
-(mod q)
-
-4.4 Goal
+## 4.4 Goal
 The prover must convince the verifier of the following statement:
-”I know polynomial coefficients corresponding to commitments C0, C1, . . . , Cd, and the
-
-polynomial evaluates to y at the point z.”
+> "I know polynomial coefficients corresponding to commitments $C_0, \dots, C_d$, and the polynomial evaluates to $y$ at the point $z$."
 
 while ensuring that:
-• The verifier learns no information about the polynomial coefficients.
-• The verifier cannot reconstruct the polynomial.
-• A prover who does not know valid polynomial coefficients cannot convince the verifier,
-except with negligible probability.
-4.5 Protocol Requirements
-Students must implement the following components:
-1. Commitment Generation
-Implement the Pedersen commitment scheme and generate commitments to polynomial
-coefficients.
-2. Interactive Zero-Knowledge Protocol
-Implement a multi-round interactive zero-knowledge protocol that allows the prover to
-demonstrate knowledge of polynomial coefficients consistent with the commitments and
-evaluation.
-3. Non-Interactive Version
-Implement a non-interactive version of the protocol using the Fiat–Shamir transform,
-where verifier challenges are generated using a cryptographic hash function.
-4. Prover Program
-The prover program must take as input:
-• Polynomial coefficients
-• Commitment randomness
-• Evaluation point z
-• Group parameters
-and must output:
-• Polynomial commitments
-• Claimed evaluation value y
-• Proof transcript
-5. Verifier Program
-The verifier program must take as input:
-• Polynomial commitments
-• Evaluation point z
-• Claimed evaluation value y
-• Proof transcript
-and must output:
-• ACCEPT if the proof is valid
-• REJECT otherwise
-4.6 Input and Output Specifications
-Students will be provided with:
-• Group parameters (Gq, q, g, h)
-• Polynomial degree d
-• Evaluation point z
-• Protocol configuration parameters
-Students must implement both prover and verifier programs.
-4.7 Security Requirements
-The implemented protocol must satisfy:
-• Completeness: An honest prover can convince the verifier.
-• Soundness: A dishonest prover cannot convince the verifier of an incorrect evaluation.
-• Zero-Knowledge: The verifier learns no information about the polynomial coefficients.
-4.8 Implementation Constraints
-Students must:
-• Implement all commitment schemes and proof protocols from scratch.
-• Implement both interactive and non-interactive versions.
-• Use only standard hash functions (e.g., SHA-256).
-• Not use any external cryptographic protocol or zero-knowledge proof libraries.
+- The verifier learns **no information** about the polynomial coefficients.
+- The verifier cannot reconstruct the polynomial.
+- A prover who does not know valid polynomial coefficients cannot convince the verifier, except with negligible probability.
+
+## 4.5 Protocol Requirements
+The following components are implemented:
+1. **Commitment Generation:** Implementation of the Pedersen commitment scheme.
+2. **Interactive Zero-Knowledge Protocol:** A multi-round protocol demonstrating knowledge of coefficients consistent with commitments and evaluation.
+3. **Non-Interactive Version:** Implementation using the Fiat–Shamir transform with SHA-256.
+4. **Prover Program:** Takes private/public inputs and outputs commitments, $y$, and the proof transcript.
+5. **Verifier Program:** Takes public inputs and proof transcript, outputting **ACCEPT** or **REJECT**.
+
+## 4.6 Implementation Constraints
+- **From Scratch:** All commitment schemes and proof protocols are implemented without external cryptographic libraries.
+- **Standard Hash:** Uses SHA-256 for the Fiat-Shamir transform.
+- **Language:** Pure Python using built-ins (`hashlib`, `secrets`, `json`).
+
+## 4.7 Security Requirements
+- **Completeness:** An honest prover always convinces the verifier.
+- **Soundness:** A dishonest prover cannot convince the verifier of an incorrect evaluation.
+- **Zero-Knowledge:** The verifier learns nothing about the polynomial coefficients.
