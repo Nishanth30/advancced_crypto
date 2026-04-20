@@ -29,10 +29,10 @@ MODES
      prover_interactive.py / verifier_interactive.py.)
 
 USAGE
-    python Problem4.py prover   --mode noninteractive
-    python Problem4.py prover   --mode interactive-hash
-    python Problem4.py prover   --mode noninteractive --tamper
-    python Problem4.py verifier
+    python main.py prover   --mode noninteractive
+    python main.py prover   --mode interactive-hash
+    python main.py prover   --mode noninteractive --tamper
+    python main.py verifier
 
 INPUT / OUTPUT FILES
     public.json      public parameters + commitments + (z, y)   (read)
@@ -401,13 +401,13 @@ def _parse(argv):
 
 _USAGE = """
 USAGE
-    python Problem4.py prover   [--mode noninteractive|interactive-hash]
+    python main.py prover   [--mode noninteractive|interactive-hash]
                                 [--public public.json]
                                 [--private private.json]
                                 [--proof proof.json]
                                 [--tamper]
 
-    python Problem4.py verifier [--public public.json]
+    python main.py verifier [--public public.json]
                                 [--proof proof.json]
 """
 

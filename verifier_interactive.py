@@ -16,7 +16,7 @@ import secrets
 import sys
 import time
 
-from Problem4 import verify_checks, validate_public
+from main import verify_checks, validate_public
 
 
 POLL_INTERVAL = 0.05

@@ -347,7 +347,7 @@ or ZK library is used, per the assignment constraint.
 \textbf{File} & \textbf{Role} \\
 \midrule
 \texttt{generate\_inputs.py}   & Input generator (primes, generators, witness)\\
-\texttt{Problem4.py}           & NI and interactive-hash prover/verifier\\
+\texttt{main.py}           & NI and interactive-hash prover/verifier\\
 \texttt{prover\_interactive.py}    & Live two-program prover (Variant B)\\
 \texttt{verifier\_interactive.py}  & Live two-program verifier (Variant B)\\
 \texttt{public.json}           & Public inputs (read by both sides)\\
@@ -558,7 +558,7 @@ Verification: $P(9) = 33 + 92\cdot 9 + 63\cdot 81 = 33 + 828 + 5103 = 5964
 \equiv 5 \pmod{101}$. \checkmark
 
 \begin{lstlisting}[style=jsonstyle, caption={\texttt{proof.json}
-(non-interactive, after running \texttt{Problem4.py prover --mode noninteractive})}]
+(non-interactive, after running \texttt{main.py prover --mode noninteractive})}]
 {
   "mode": "noninteractive",
   "transcript": {
@@ -590,20 +590,20 @@ python generate_inputs.py --size small --h-mode hash \
                           --degree 3 --rounds 4
 
 # 2. non-interactive proof
-python Problem4.py prover   --mode noninteractive
-python Problem4.py verifier                       # ACCEPT
+python main.py prover   --mode noninteractive
+python main.py verifier                       # ACCEPT
 
 # 3. single-program interactive (hash-derived challenge)
-python Problem4.py prover   --mode interactive-hash
-python Problem4.py verifier                       # ACCEPT
+python main.py prover   --mode interactive-hash
+python main.py verifier                       # ACCEPT
 
 # 4. live two-program interactive
 python verifier_interactive.py &                  # shell A
 python prover_interactive.py                      # shell B
 
 # 5. tamper demo
-python Problem4.py prover   --mode noninteractive --tamper
-python Problem4.py verifier                       # REJECT
+python main.py prover   --mode noninteractive --tamper
+python main.py verifier                       # REJECT
 \end{lstlisting}
 
 \section{Security Summary}

@@ -29,7 +29,7 @@ import os
 import sys
 import time
 
-from Problem4 import (
+from main import (
     commit_phase, response_phase, compute_commitments, poly_eval,
     validate_public,
 )
